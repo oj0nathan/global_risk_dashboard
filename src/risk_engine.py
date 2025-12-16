@@ -69,10 +69,7 @@ class RiskEngine:
             # Rolling Loop
             betas_rows = []
             dates = []
-            
-            # Optimization: We don't need to run every single day for the UI, 
-            # but for accuracy we should. To speed up, we can step by 5 days if needed, 
-            # but let's stick to full daily to match notebook.
+
             for i in range(self.window, len(common)):
                 # Training Window
                 y_train = y_aligned.iloc[i-self.window : i]

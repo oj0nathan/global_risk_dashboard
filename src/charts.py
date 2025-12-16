@@ -1,134 +1,148 @@
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 import pandas as pd
 import numpy as np
 
-# --- 1. HEATMAP (FIXED SCALING) ---
-def plot_heatmap(betas_dict):
-    """
-    Displays the factor sensitivities across the universe.
-    """
-    rows = []
-    for tkr, df in betas_dict.items():
-        row = df.iloc[-1].drop("Intercept", errors="ignore")
-        row.name = tkr
-        rows.append(row)
-        
-    df = pd.DataFrame(rows)
-    
-    # Dynamic height calculation: 30px per ticker, minimum 600px
-    chart_height = max(600, len(df) * 30)
-
-    # Center the color scale at 0 (White)
-    max_val = df.abs().max().max()
-    
-    fig = px.imshow(
-        df,
-        labels=dict(x="Risk Factor", y="Ticker", color="Sensitivity (Beta)"),
-        x=df.columns, y=df.index,
-        color_continuous_scale="RdBu",
-        zmin=-max_val, 
-        zmax=max_val,
-        aspect="auto",  # <--- CRITICAL FIX: Allows cells to stretch horizontally
-        height=chart_height
-    )
-    
-    fig.update_layout(
-        title={
-            'text': "Portfolio Risk Sensitivities (Red = Inverse Relationship, Blue = Positive Relationship)",
-            'y':0.98, 'x':0.5, 'xanchor': 'center', 'yanchor': 'top'
-        },
-        margin=dict(l=150, r=50, t=80, b=50), # Extra left margin for ticker names
-        yaxis_nticks=len(df) # Ensure every ticker name is shown
-    )
-    return fig
-
-# --- 2. ROLLING BETAS (Line Chart) ---
 def plot_rolling_betas(beta_df, ticker):
     """
-    Shows how a stock's sensitivity changes over time.
+    Plots the evolution of factor betas over time for a single stock.
+    Input: beta_df (DataFrame with dates as index and factors as columns)
     """
-    df_long = beta_df.drop(columns=["Intercept"], errors="ignore").reset_index()
-    df_long = df_long.melt(id_vars="index", var_name="Factor", value_name="Beta")
-    df_long.rename(columns={"index": "Date"}, inplace=True)
+    fig = go.Figure()
     
-    fig = px.line(
-        df_long, x="Date", y="Beta", color="Factor",
-        facet_col="Factor", facet_col_wrap=3,
-        height=700
-    )
-    fig.update_yaxes(matches=None, showgrid=True, gridcolor='lightgrey')
-    fig.update_xaxes(showgrid=True, gridcolor='lightgrey')
+    # Iterate through columns (factors)
+    for col in beta_df.columns:
+        if col == "Intercept": continue  # Skip intercept
+        
+        fig.add_trace(go.Scatter(
+            x=beta_df.index, 
+            y=beta_df[col], 
+            mode='lines', 
+            name=col,
+            hovertemplate=f"<b>{col}</b>: %{{y:.2f}}<extra></extra>"
+        ))
+    
     fig.update_layout(
-        title=f"Time-Varying Risk Exposure: {ticker}",
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        legend=dict(orientation="h", y=-0.1)
+        title=f"Rolling Factor Betas: {ticker}",
+        yaxis_title="Beta Sensitivity",
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=40, t=80, b=40),
+        height=400
     )
-    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1])) # Clean facet titles
     return fig
 
-# --- 3. NEW: RISK BREAKDOWN (Donut Chart) ---
-def plot_risk_breakdown(explained_var, residual_var):
+def plot_heatmap(betas_dict):
     """
-    Visualizes Systematic vs. Idiosyncratic Risk.
+    Aggregates the *latest* betas for all stocks into a heatmap.
+    Input: betas_dict {ticker: DataFrame}
     """
-    total = explained_var + residual_var
-    sys_pct = explained_var / total
-    idio_pct = residual_var / total
+    # 1. Extract the last row (most recent beta) for each ticker
+    data = []
+    tickers = []
     
-    labels = ["Systematic Risk (Market Driven)", "Idiosyncratic Risk (Company Specific)"]
-    values = [explained_var, residual_var]
-    colors = ['#4682B4', '#D3D3D3'] # SteelBlue vs LightGrey
+    for tkr, df in betas_dict.items():
+        if not df.empty:
+            # Get last row, drop intercept
+            last_beta = df.iloc[-1].drop("Intercept", errors="ignore")
+            data.append(last_beta)
+            tickers.append(tkr)
+            
+    if not data:
+        return go.Figure()
+
+    # 2. Create DataFrame for Heatmap
+    df_heatmap = pd.DataFrame(data, index=tickers).fillna(0)
+    
+    # 3. Calculate symmetric range to ensure 0 is white/neutral
+    # We find the largest absolute number (e.g. 1.5) and set range to -1.5 to +1.5
+    limit = df_heatmap.abs().max().max()
+    
+    # 4. Plot
+    fig = px.imshow(
+        df_heatmap,
+        labels=dict(x="Risk Factor", y="Asset", color="Beta"),
+        x=df_heatmap.columns,
+        y=df_heatmap.index,
+        aspect="auto",
+        color_continuous_scale="RdBu_r", # Red=Negative, Blue=Positive
+        zmin=-limit,   # Explicitly set min
+        zmax=limit     # Explicitly set max
+    )
+    
+    fig.update_layout(
+        title="Portfolio Risk Factor Sensitivities (Current)",
+        height=600,
+        margin=dict(l=50, r=50, t=50, b=50)
+    )
+    return fig
+
+def plot_risk_breakdown(var_sys, var_idio):
+    """
+    Donut chart showing Systematic vs Idiosyncratic Risk Variance.
+    """
+    labels = ['Systematic (Market Risk)', 'Idiosyncratic (Stock Specific)']
+    values = [var_sys, var_idio]
     
     fig = go.Figure(data=[go.Pie(
-        labels=labels, values=values, hole=.6,
-        marker=dict(colors=colors, line=dict(color='#000000', width=1))
+        labels=labels, 
+        values=values, 
+        hole=.6,
+        marker_colors=['#1f77b4', '#d62728'] # Blue vs Red
     )])
     
     fig.update_layout(
-        title="Risk Variance Decomposition",
-        annotations=[dict(text=f"{sys_pct:.1%} Explained", x=0.5, y=0.5, font_size=20, showarrow=False)]
+        showlegend=False,
+        annotations=[dict(text='Risk<br>Source', x=0.5, y=0.5, font_size=20, showarrow=False)],
+        margin=dict(l=20, r=20, t=20, b=20),
+        height=300
     )
     return fig
 
-# --- 4. NEW: FACTOR CORRELATION (Validation) ---
+def plot_pnl_attribution(pnl_series, total_pnl):
+    """
+    Bar chart showing which factors contributed to the PnL in the stress test.
+    """
+    # Color logic: Green for profit, Red for loss
+    colors = ['#2ca02c' if v >= 0 else '#d62728' for v in pnl_series.values]
+    
+    fig = go.Figure()
+    
+    # Factor Bars
+    fig.add_trace(go.Bar(
+        x=pnl_series.index,
+        y=pnl_series.values,
+        marker_color=colors,
+        text=pnl_series.values,
+        texttemplate="%{y:.1%}",
+        textposition="auto",
+        name="Factor PnL"
+    ))
+    
+    fig.update_layout(
+        title=f"Projected Impact Breakdown (Total: {total_pnl:.2%})",
+        yaxis_title="PnL Contribution",
+        yaxis_tickformat=".1%",
+        template="plotly_white",
+        showlegend=False
+    )
+    return fig
+
 def plot_factor_corr(factor_rets):
     """
-    Shows correlations between input factors.
+    Correlation Matrix of the input factors to check for Multicollinearity.
     """
     corr = factor_rets.corr()
     
     fig = px.imshow(
         corr,
         text_auto=".2f",
+        aspect="auto",
         color_continuous_scale="RdBu",
         zmin=-1, zmax=1,
-        aspect="auto",
-        height=600,
-        title="Factor Correlation Matrix (Validation)"
+        title="Input Factor Correlation Matrix"
     )
-    return fig
-
-# --- 5. SCENARIO PnL (Bar Chart) ---
-def plot_pnl_attribution(pnl_series, total_ret):
-    df = pnl_series.reset_index()
-    df.columns = ["Factor", "PnL"]
     
-    # Color logic: Red for loss, Green for profit
-    colors = ['#d62728' if v < 0 else '#2ca02c' for v in df["PnL"]]
-
-    fig = go.Figure(go.Bar(
-        x=df["PnL"],
-        y=df["Factor"],
-        orientation='h',
-        marker_color=colors
-    ))
-    
-    fig.update_layout(
-        title=f"Projected Portfolio Impact: {total_ret:.2%}",
-        xaxis_title="Estimated Return Contribution",
-        yaxis_title="Risk Factor",
-        height=500
-    )
+    fig.update_layout(height=500)
     return fig
